@@ -36,6 +36,7 @@ import com.salesforce.phoenix.compile.OrderByCompiler.OrderBy;
 import com.salesforce.phoenix.compile.*;
 import com.salesforce.phoenix.coprocessor.ScanRegionObserver;
 import com.salesforce.phoenix.iterate.*;
+import com.salesforce.phoenix.iterate.ParallelIterators.ParallelIteratorFactory;
 import com.salesforce.phoenix.parse.HintNode.Hint;
 import com.salesforce.phoenix.query.*;
 import com.salesforce.phoenix.schema.*;
@@ -51,9 +52,11 @@ import com.salesforce.phoenix.schema.*;
  */
 public class ScanPlan extends BasicQueryPlan {
     private List<KeyRange> splits;
+    private ParallelIteratorFactory parallelIteratorFactory;
     
-    public ScanPlan(StatementContext context, TableRef table, RowProjector projector, Integer limit, OrderBy orderBy) {
+    public ScanPlan(StatementContext context, TableRef table, RowProjector projector, Integer limit, OrderBy orderBy, ParallelIteratorFactory parallelIteratorFactory) {
         super(context, table, projector, context.getBindManager().getParameterMetaData(), limit, orderBy, null);
+        this.parallelIteratorFactory = parallelIteratorFactory;
         if (!orderBy.getOrderByExpressions().isEmpty() && !context.hasHint(Hint.NO_INTRA_REGION_PARALLELIZATION)) { // TopN
             int thresholdBytes = context.getConnection().getQueryServices().getProps().getInt(
                     QueryServices.SPOOL_THRESHOLD_BYTES_ATTRIB, QueryServicesOptions.DEFAULT_SPOOL_THRESHOLD_BYTES);
@@ -77,44 +80,35 @@ public class ScanPlan extends BasicQueryPlan {
         /* If no limit or topN, use parallel iterator so that we get results faster. Otherwise, if
          * limit is provided, run query serially.
          */
-        ParallelIterators iterators = new ParallelIterators(context, tableRef, GroupBy.EMPTY_GROUP_BY, orderBy.getOrderByExpressions().isEmpty() ? limit : null);
+        boolean isOrdered = !orderBy.getOrderByExpressions().isEmpty();
+        ParallelIterators iterators = new ParallelIterators(context, tableRef, GroupBy.EMPTY_GROUP_BY, isOrdered ? null : limit, parallelIteratorFactory);
         splits = iterators.getSplits();
-        if (limit == null || !orderBy.getOrderByExpressions().isEmpty()) {
-            if (orderBy.getOrderByExpressions().isEmpty()) {
-                if (isSalted && 
-                        services.getProps().getBoolean(
-                                QueryServices.ROW_KEY_ORDER_SALTED_TABLE_ATTRIB, 
-                                QueryServicesOptions.DEFAULT_ROW_KEY_ORDER_SALTED_TABLE)) {
-                    scanner = new MergeSortRowKeyResultIterator(iterators, SaltingUtil.NUM_SALTING_BYTES);
-                } else {
-                    scanner = new ConcatResultIterator(iterators);
+        if (isOrdered) {
+            // If we expect to have a small amount of data in a single region then do the sort on the client side
+            if (context.hasHint(Hint.NO_INTRA_REGION_PARALLELIZATION)) {
+                int thresholdBytes = services.getProps().getInt(QueryServices.SPOOL_THRESHOLD_BYTES_ATTRIB, 
+                        QueryServicesOptions.DEFAULT_SPOOL_THRESHOLD_BYTES);
+                scanner = new ConcatResultIterator(iterators);
+                scanner = new OrderedResultIterator(scanner, orderBy.getOrderByExpressions(), thresholdBytes, limit);
+                if (limit != null) {
+                    scanner = new LimitingResultIterator(scanner, limit);
                 }
-            } else {
-                // If we expect to have a small amount of data in a single region
-                // do the sort on the client side
-                if (context.hasHint(Hint.NO_INTRA_REGION_PARALLELIZATION)) {
-                    int thresholdBytes = services.getProps().getInt(QueryServices.SPOOL_THRESHOLD_BYTES_ATTRIB, 
-                            QueryServicesOptions.DEFAULT_SPOOL_THRESHOLD_BYTES);
-                    scanner = new ConcatResultIterator(iterators);
-                    scanner = new OrderedResultIterator(scanner, orderBy.getOrderByExpressions(), thresholdBytes, limit);
-                } else {
-                    scanner = new MergeSortTopNResultIterator(iterators, limit, orderBy.getOrderByExpressions());
-                }
+            } else { // TopN or OrderBy with no limit
+                scanner = new MergeSortTopNResultIterator(iterators, limit, orderBy.getOrderByExpressions());
             }
         } else {
-            // If we're a salted table and we're guaranteeing the same row key order traversal,
-            // use a ResultIterators implementation that runs one serial scan per bucket and
-            // then does a merge sort against those.  Otherwise, we can use a regular table scan.
             if (isSalted && 
-                    services.getProps().getBoolean(
+                    (services.getProps().getBoolean(
                             QueryServices.ROW_KEY_ORDER_SALTED_TABLE_ATTRIB, 
-                            QueryServicesOptions.DEFAULT_ROW_KEY_ORDER_SALTED_TABLE)) {
+                            QueryServicesOptions.DEFAULT_ROW_KEY_ORDER_SALTED_TABLE) ||
+                     orderBy == OrderBy.ROW_KEY_ORDER_BY)) { // ORDER BY was optimized out b/c query is in row key order
                 scanner = new MergeSortRowKeyResultIterator(iterators, SaltingUtil.NUM_SALTING_BYTES);
             } else {
                 scanner = new ConcatResultIterator(iterators);
             }
-            scanner = new LimitingResultIterator(scanner, limit);
-            splits = null;
+            if (limit != null) {
+                scanner = new LimitingResultIterator(scanner, limit);
+            }
         }
 
         return new WrappedScanner(scanner, getProjector());

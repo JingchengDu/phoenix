@@ -42,10 +42,12 @@ import com.google.common.base.Function;
 import com.salesforce.phoenix.compile.GroupByCompiler.GroupBy;
 import com.salesforce.phoenix.compile.StatementContext;
 import com.salesforce.phoenix.job.JobManager.JobCallable;
-import com.salesforce.phoenix.memory.MemoryManager;
 import com.salesforce.phoenix.query.*;
 import com.salesforce.phoenix.schema.TableRef;
 import com.salesforce.phoenix.util.*;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /**
@@ -57,10 +59,15 @@ import com.salesforce.phoenix.util.*;
  * @since 0.1
  */
 public class ParallelIterators extends ExplainTable implements ResultIterators {
+	private static final Logger logger = LoggerFactory.getLogger(ParallelIterators.class);
     private final List<KeyRange> splits;
+    private final ParallelIteratorFactory iteratorFactory;
+    
+    public static interface ParallelIteratorFactory {
+        PeekingResultIterator newIterator(ResultIterator scanner) throws SQLException;
+    }
 
     private static final int DEFAULT_THREAD_TIMEOUT_MS = 60000; // 1min
-    private static final int DEFAULT_SPOOL_THRESHOLD_BYTES = 1024 * 100; // 100K
 
     static final Function<Map.Entry<HRegionInfo, ServerName>, KeyRange> TO_KEY_RANGE = new Function<Map.Entry<HRegionInfo, ServerName>, KeyRange>() {
         @Override
@@ -69,9 +76,10 @@ public class ParallelIterators extends ExplainTable implements ResultIterators {
         }
     };
 
-    public ParallelIterators(StatementContext context, TableRef table, GroupBy groupBy, Integer limit) throws SQLException {
+    public ParallelIterators(StatementContext context, TableRef table, GroupBy groupBy, Integer limit, ParallelIteratorFactory iteratorFactory) throws SQLException {
         super(context, table, groupBy);
         this.splits = getSplits(context, table);
+        this.iteratorFactory = iteratorFactory;
         if (limit != null) {
             ScanUtil.andFilterAtEnd(context.getScan(), new PageFilter(limit));
         }
@@ -104,11 +112,10 @@ public class ParallelIterators extends ExplainTable implements ResultIterators {
             int numSplits = splits.size();
             List<PeekingResultIterator> iterators = new ArrayList<PeekingResultIterator>(numSplits);
             List<Pair<byte[],Future<PeekingResultIterator>>> futures = new ArrayList<Pair<byte[],Future<PeekingResultIterator>>>(numSplits);
+            final UUID scanId = UUID.randomUUID();
             try {
                 ExecutorService executor = services.getExecutor();
-                final MemoryManager mm = services.getMemoryManager();
-                final int spoolThresholdBytes = props.getInt(QueryServices.SPOOL_THRESHOLD_BYTES_ATTRIB, DEFAULT_SPOOL_THRESHOLD_BYTES);
-                for (KeyRange split : splits) {
+                for (final KeyRange split : splits) {
                     final Scan splitScan = new Scan(this.context.getScan());
                     // Intersect with existing start/stop key
                     if (ScanUtil.intersectScanRange(splitScan, split.getLowerRange(), split.getUpperRange(), this.context.getScanRanges().useSkipScanFilter())) {
@@ -118,8 +125,12 @@ public class ParallelIterators extends ExplainTable implements ResultIterators {
                             @Override
                             public PeekingResultIterator call() throws Exception {
                                 // TODO: different HTableInterfaces for each thread or the same is better?
+                            	long startTime = System.currentTimeMillis();
                                 ResultIterator scanner = new TableResultIterator(context, table, splitScan);
-                                return new SpoolingResultIterator(scanner, mm, spoolThresholdBytes);
+                                if (logger.isDebugEnabled()) {
+                                	logger.debug("Id: " + scanId + ", Time: " + (System.currentTimeMillis() - startTime) + "ms, Scan: " + split);
+                                }
+                                return iteratorFactory.newIterator(scanner);
                             }
     
                             /**

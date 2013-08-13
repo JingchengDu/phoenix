@@ -29,6 +29,7 @@ package com.salesforce.phoenix.schema;
 
 import java.math.*;
 import java.sql.*;
+import java.text.Format;
 import java.util.Map;
 
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
@@ -150,6 +151,17 @@ public enum PDataType {
             return this == otherType || this == CHAR;
         }
 
+        @Override
+        public String toStringLiteral(byte[] b, int offset, int length, Format formatter) {
+            while (b[length-1] == 0) {
+                length--;
+            }
+            if (formatter != null) {
+                Object o = toObject(b,offset,length);
+                return "'" + formatter.format(o) + "'";
+            }
+            return "'" + Bytes.toStringBinary(b, offset, length) + "'";
+        }
     },
     /**
      * Fixed length single byte characters
@@ -260,6 +272,11 @@ public enum PDataType {
         @Override
         public boolean isBytesComparableWith(PDataType otherType) {
             return this == otherType || this == VARCHAR;
+        }
+        
+        @Override
+        public String toStringLiteral(byte[] b, int offset, int length, Format formatter) {
+            return VARCHAR.toStringLiteral(b, offset, length, formatter);
         }
     },
     LONG("BIGINT", Types.BIGINT, Long.class, new LongCodec()) {
@@ -1389,7 +1406,7 @@ public enum PDataType {
                 }
             }
             if (desiredMaxLength != null && desiredScale != null && maxLength != null && scale != null &&
-            		((desiredScale == PDataType.NO_SCALE && desiredMaxLength < maxLength) || 
+            		((desiredScale == null && desiredMaxLength < maxLength) || 
             				(desiredMaxLength - desiredScale) < (maxLength - scale))) {
                 return false;
             }
@@ -1399,7 +1416,7 @@ public enum PDataType {
         @Override
         public byte[] coerceBytes(byte[] b, Object object, PDataType actualType, Integer maxLength, Integer scale,
                 Integer desiredMaxLength, Integer desiredScale) {
-            if (desiredScale == null || desiredScale == PDataType.NO_SCALE) {
+            if (desiredScale == null || desiredScale == null) {
                 // deiredScale not available, or we do not have scale requirement, delegate to parents.
                 return super.coerceBytes(b, object, actualType);
             }
@@ -1542,6 +1559,17 @@ public enum PDataType {
             }
             return DateUtil.parseTimestamp(value);
         }
+        
+        @Override
+        public String toStringLiteral(byte[] b, int offset, int length, Format formatter) {
+            Timestamp value = (Timestamp)toObject(b,offset,length);
+            if (formatter == null || formatter == DateUtil.DEFAULT_DATE_FORMATTER) {
+                // If default formatter has not been overridden,
+                // use one that displays milliseconds.
+                formatter = DateUtil.DEFAULT_MS_DATE_FORMATTER;
+            }
+            return "'" + super.toStringLiteral(b, offset, length, formatter) + "." + value.getNanos() + "'";
+        }
     },
     TIME("TIME", Types.TIME, Time.class, new DateCodec()) {
 
@@ -1630,6 +1658,16 @@ public enum PDataType {
         public boolean isBytesComparableWith(PDataType otherType) {
             return this == otherType || this == DATE;
         }
+        
+        @Override
+        public String toStringLiteral(byte[] b, int offset, int length, Format formatter) {
+            if (formatter == null || formatter == DateUtil.DEFAULT_DATE_FORMATTER) {
+                // If default formatter has not been overridden,
+                // use one that displays milliseconds.
+                formatter = DateUtil.DEFAULT_MS_DATE_FORMATTER;
+            }
+            return "'" + super.toStringLiteral(b, offset, length, formatter) + "'";
+        }
     },
     DATE("DATE", Types.DATE, Date.class, new DateCodec()) { // After TIMESTAMP and DATE to ensure toLiteral finds those first
 
@@ -1714,6 +1752,11 @@ public enum PDataType {
         @Override
         public boolean isBytesComparableWith(PDataType otherType) {
             return this == otherType || this == TIME;
+        }
+        
+        @Override
+        public String toStringLiteral(byte[] b, int offset, int length, Format formatter) {
+            return TIME.toStringLiteral(b, offset, length, formatter);
         }
     },
     /**
@@ -2790,6 +2833,21 @@ public enum PDataType {
             }
             return Base64.decode(value);
         }
+        
+        @Override
+        public String toStringLiteral(byte[] b, int o, int length, Format formatter) {
+            if (formatter != null) {
+                return formatter.format(b);
+            }
+            StringBuilder buf = new StringBuilder();
+            buf.append('[');
+            for (int i = 0; i < b.length; i++) {
+                buf.append(0xFF & b[i]);
+                buf.append(',');
+            }
+            buf.setCharAt(buf.length()-1, ']');
+            return buf.toString();
+        }
     },
     BINARY("BINARY", Types.BINARY, byte[].class, null) {
         @Override
@@ -2891,6 +2949,14 @@ public enum PDataType {
             }
             return Base64.decode(value);
         }
+        
+        @Override
+        public String toStringLiteral(byte[] b, int offset, int length, Format formatter) {
+            if (formatter == null && b.length == 1) {
+                return Integer.toString(0xFF & b[0]);
+            }
+            return VARBINARY.toStringLiteral(b, offset, length, formatter);
+        }
     },
     ;
 
@@ -2986,25 +3052,37 @@ public enum PDataType {
             return Bytes.compareTo(lhsConverted, 0, lhsConverted.length, rhs, rhsOffset, rhsLength);
         }
         // convert to native and compare
-//        return Longs.compare(this.getCodec().decodeLong(lhs, lhsOffset, lhsColumnModifier), rhsType.getCodec().decodeLong(rhs, rhsOffset, rhsColumnModifier));
-        if(this.isCoercibleTo(PDataType.LONG) && rhsType.isCoercibleTo(PDataType.LONG)) {
+        if(this.isCoercibleTo(PDataType.LONG) && rhsType.isCoercibleTo(PDataType.LONG)) { // native long to long comparison
             return Longs.compare(this.getCodec().decodeLong(lhs, lhsOffset, lhsColumnModifier), rhsType.getCodec().decodeLong(rhs, rhsOffset, rhsColumnModifier));
-        } else if (isDoubleOrFloat(this) && isDoubleOrFloat(rhsType)) {
+        } else if (isDoubleOrFloat(this) && isDoubleOrFloat(rhsType)) { // native double to double comparison
             return Doubles.compare(this.getCodec().decodeDouble(lhs, lhsOffset, lhsColumnModifier), rhsType.getCodec().decodeDouble(rhs, rhsOffset, rhsColumnModifier));
-        } else {
+        } else { // native float/double to long comparison
+            float fvalue = 0.0F;
             double dvalue = 0.0;
             long lvalue = 0;
+            boolean isFloat = false;
+            int invert = 1;
+            
             if (this.isCoercibleTo(PDataType.LONG)) {
                 lvalue = this.getCodec().decodeLong(lhs, lhsOffset, lhsColumnModifier);
+            } else if (this == PDataType.FLOAT) {
+                isFloat = true;
+                fvalue = this.getCodec().decodeFloat(lhs, lhsOffset, lhsColumnModifier);
             } else if (this.isCoercibleTo(PDataType.DOUBLE)) {
                 dvalue = this.getCodec().decodeDouble(lhs, lhsOffset, lhsColumnModifier);
             }
             if (rhsType.isCoercibleTo(PDataType.LONG)) {
                 lvalue = rhsType.getCodec().decodeLong(rhs, rhsOffset, rhsColumnModifier);
+            } else if (rhsType == PDataType.FLOAT) {
+                invert = -1;
+                isFloat = true;
+                fvalue = rhsType.getCodec().decodeFloat(rhs, rhsOffset, rhsColumnModifier);
             } else if (rhsType.isCoercibleTo(PDataType.DOUBLE)) {
+                invert = -1;
                 dvalue = rhsType.getCodec().decodeDouble(rhs, rhsOffset, rhsColumnModifier);
             }
-            return compareDoubleToLong(dvalue, lvalue);
+            // Invert the comparison if float/double value is on the RHS
+            return invert * (isFloat ? compareFloatToLong(fvalue, lvalue) : compareDoubleToLong(dvalue, lvalue));
         }
     }
     
@@ -3013,7 +3091,29 @@ public enum PDataType {
                 || type == PDataType.UNSIGNED_FLOAT || type == PDataType.UNSIGNED_DOUBLE;
     }
     
-    public static int compareDoubleToLong(double d, long l) {
+    /**
+     * Compares a float against a long. Behaves better than
+     * {@link #compareDoubleToLong(double, long)} for float
+     * values outside of Integer.MAX_VALUE and Integer.MIN_VALUE.
+     * @param f a float value
+     * @param l a long value
+     * @return -1 if f is less than l, 1 if f is greater than l, and 0 if f is equal to l
+     */
+    private static int compareFloatToLong(float f, long l) {
+        if (f > Integer.MAX_VALUE || f < Integer.MIN_VALUE) {
+            return f < l ? -1 : f > l ? 1 : 0;
+        }
+        long diff = (long)f - l;
+        return Long.signum(diff);
+    }
+
+    /**
+     * Compares a double against a long.
+     * @param d a double value
+     * @param l a long value
+     * @return -1 if d is less than l, 1 if d is greater than l, and 0 if d is equal to l
+     */
+    private static int compareDoubleToLong(double d, long l) {
         if (d > Long.MAX_VALUE) {
             return 1;
         }
@@ -3922,7 +4022,6 @@ public enum PDataType {
     public static final int MAX_PRECISION = 38; // Max precision guaranteed to fit into a long (and this should be plenty)
     public static final int MIN_DECIMAL_AVG_SCALE = 4;
     public static final MathContext DEFAULT_MATH_CONTEXT = new MathContext(MAX_PRECISION, RoundingMode.HALF_UP);
-    public static final int NO_SCALE = Integer.MIN_VALUE; // Oracle allows negative scale, so use the smallest value for this purpose.
     public static final int DEFAULT_SCALE = 0;
 
     private static final Integer MAX_BIG_DECIMAL_BYTES = 21;
@@ -4122,9 +4221,10 @@ public enum PDataType {
         return v;
     }
 
-    // Calculate the precisioin and scale of a raw decimal bytes. Returns the values as an int
+    // Calculate the precision and scale of a raw decimal bytes. Returns the values as an int
     // array. The first value is precision, the second value is scale.
-    public static int[] getDecimalPrecisionAndScale(byte[] bytes, int offset, int length) {
+    // Default scope for testing
+    static int[] getDecimalPrecisionAndScale(byte[] bytes, int offset, int length) {
         // 0, which should have no precision nor scale.
         if (length == 1 && bytes[offset] == ZERO_BYTE) {
             return new int[] {0, 0};
@@ -4395,6 +4495,20 @@ public enum PDataType {
 
     public KeyRange getKeyRange(byte[] point) {
         return getKeyRange(point, true, point, true);
+    }
+    
+    public String toStringLiteral(ImmutableBytesWritable ptr, Format formatter) {
+        return toStringLiteral(ptr.get(),ptr.getOffset(),ptr.getLength(),formatter);
+    }
+    public String toStringLiteral(byte[] b, Format formatter) {
+        return toStringLiteral(b,0,b.length,formatter);
+    }
+    public String toStringLiteral(byte[] b, int offset, int length, Format formatter) {
+        Object o = toObject(b,offset,length);
+        if (formatter != null) {
+            return formatter.format(o);
+        }
+        return o.toString();
     }
     
     public KeyRange getKeyRange(byte[] lowerRange, boolean lowerInclusive, byte[] upperRange, boolean upperInclusive) {

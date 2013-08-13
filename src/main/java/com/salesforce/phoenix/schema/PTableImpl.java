@@ -83,8 +83,13 @@ public class PTableImpl implements PTable {
     private List<PTable> indexes;
     // Data table name that the index is created on.
     private PName dataTableName;
+    private boolean isImmutableRows;
     
     public PTableImpl() {
+    }
+
+    public PTableImpl(PName name) { // For finding table ref
+        this.name = name;
     }
 
     public PTableImpl(long timeStamp) { // For delete marker
@@ -110,52 +115,69 @@ public class PTableImpl implements PTable {
     public static PTableImpl makePTable(PTable table, long timeStamp, List<PTable> indexes) throws SQLException {
         return new PTableImpl(
                 table.getName(), table.getType(), table.getIndexState(), timeStamp, table.getSequenceNumber() + 1, 
-                table.getPKName(), table.getBucketNum(), table.getColumns(), table.getDataTableName(), indexes);
+                table.getPKName(), table.getBucketNum(), table.getBucketNum() == null ? table.getColumns() : table.getColumns().subList(1, table.getColumns().size()), table.getDataTableName(), indexes, table.isImmutableRows());
+    }
+
+    public static PTableImpl makePTable(PTable table, List<PColumn> columns) throws SQLException {
+        return new PTableImpl(
+                table.getName(), table.getType(), table.getIndexState(), table.getTimeStamp(), table.getSequenceNumber(), 
+                table.getPKName(), table.getBucketNum(), columns, table.getDataTableName(), table.getIndexes(), table.isImmutableRows());
+    }
+
+    public static PTableImpl makePTable(PTable table, long timeStamp, long sequenceNumber, List<PColumn> columns) throws SQLException {
+        return new PTableImpl(
+                table.getName(), table.getType(), table.getIndexState(), timeStamp, sequenceNumber, 
+                table.getPKName(), table.getBucketNum(), columns, table.getDataTableName(), table.getIndexes(), table.isImmutableRows());
+    }
+
+    public static PTableImpl makePTable(PTable table, long timeStamp, long sequenceNumber, List<PColumn> columns, boolean isImmutableRows) throws SQLException {
+        return new PTableImpl(
+                table.getName(), table.getType(), table.getIndexState(), timeStamp, sequenceNumber, 
+                table.getPKName(), table.getBucketNum(), columns, table.getDataTableName(), table.getIndexes(), isImmutableRows);
     }
 
     public static PTableImpl makePTable(PTable table, PIndexState state) throws SQLException {
         return new PTableImpl(
                 table.getName(), table.getType(), state, table.getTimeStamp(), table.getSequenceNumber(), 
-                table.getPKName(), table.getBucketNum(), table.getColumns(), table.getDataTableName(), table.getIndexes());
-    }
-
-    public static PTableImpl makePTable(PName name, PTableType type, long timeStamp, long sequenceNumber, PName pkName,
-            Integer bucketNum, List<PColumn> columns) throws SQLException {
-        return new PTableImpl(name, type, null, timeStamp, sequenceNumber, pkName, bucketNum, columns, null, Collections.<PTable>emptyList());
+                table.getPKName(), table.getBucketNum(), table.getColumns(), table.getDataTableName(), table.getIndexes(), table.isImmutableRows());
     }
 
     public static PTableImpl makePTable(PName name, PTableType type, PIndexState state, long timeStamp, long sequenceNumber, PName pkName,
-            Integer bucketNum, List<PColumn> columns, PName dataTableName, List<PTable> indexes) throws SQLException {
-        return new PTableImpl(name, type, state, timeStamp, sequenceNumber, pkName, bucketNum, columns, dataTableName, indexes);
+            Integer bucketNum, List<PColumn> columns, PName dataTableName, List<PTable> indexes, boolean isImmutableRows) throws SQLException {
+        return new PTableImpl(name, type, state, timeStamp, sequenceNumber, pkName, bucketNum, columns, dataTableName, indexes, isImmutableRows);
     }
 
     private PTableImpl(PName name, PTableType type, PIndexState state, long timeStamp, long sequenceNumber, PName pkName,
-            Integer bucketNum, List<PColumn> columns, PName dataTableName, List<PTable> indexes) throws SQLException {
+            Integer bucketNum, List<PColumn> columns, PName dataTableName, List<PTable> indexes, boolean isImmutableRows) throws SQLException {
         init(name, type, state, timeStamp, sequenceNumber, pkName, bucketNum, columns, new PTableStatsImpl(),
-                dataTableName, indexes);
+                dataTableName, indexes, isImmutableRows);
     }
 
     private void init(PName name, PTableType type, PIndexState state, long timeStamp, long sequenceNumber, PName pkName,
-            Integer bucketNum, List<PColumn> columns, PTableStats stats, PName dataTableName, List<PTable> indexes) throws SQLException {
+            Integer bucketNum, List<PColumn> columns, PTableStats stats, PName dataTableName, List<PTable> indexes, boolean isImmutableRows) throws SQLException {
         this.name = name;
         this.type = type;
         this.state = state;
         this.timeStamp = timeStamp;
         this.sequenceNumber = sequenceNumber;
         this.pkName = pkName;
+        this.isImmutableRows = isImmutableRows;
         List<PColumn> pkColumns;
         PColumn[] allColumns;
 
         RowKeySchemaBuilder builder = new RowKeySchemaBuilder();
         this.columnsByName = ArrayListMultimap.create(columns.size(), 1);
-        allColumns = new PColumn[columns.size()];
         if (bucketNum != null) {
-            pkColumns = Lists.newArrayListWithExpectedSize(columns.size());
+            // Add salt column to allColumns and pkColumns, but don't add to
+            // columnsByName, since it should not be addressable via name.
+            allColumns = new PColumn[columns.size()+1];
+            allColumns[SALTING_COLUMN.getPosition()] = SALTING_COLUMN;
+            pkColumns = Lists.newArrayListWithExpectedSize(columns.size()+1);
             pkColumns.add(SALTING_COLUMN);
             builder.addField(SALTING_COLUMN);
-            columnsByName.put(SALTING_COLUMN.getName().getString(), SALTING_COLUMN);
         } else {
-            pkColumns = Lists.newArrayListWithExpectedSize(columns.size()-1);
+            allColumns = new PColumn[columns.size()];
+            pkColumns = Lists.newArrayListWithExpectedSize(columns.size());
         }
         for (int i = 0; i < columns.size(); i++) {
             PColumn column = columns.get(i);
@@ -219,6 +241,11 @@ public class PTableImpl implements PTable {
         this.dataTableName = dataTableName;
     }
 
+    @Override
+    public boolean isImmutableRows() {
+        return isImmutableRows;
+    }
+    
     @Override
     public String toString() {
         return name.getString();
@@ -535,6 +562,7 @@ public class PTableImpl implements PTable {
             index.readFields(input);
             indexes.add(index);
         }
+        boolean isImmutableRows = input.readBoolean();
         Map<String, byte[][]> guidePosts = new HashMap<String, byte[][]>();
         int size = WritableUtils.readVInt(input);
         for (int i=0; i<size; i++) {
@@ -551,7 +579,7 @@ public class PTableImpl implements PTable {
         PTableStats stats = new PTableStatsImpl(guidePosts);
         try {
             init(tableName, tableType, indexState, timeStamp, sequenceNumber, pkName,
-                    bucketNum.equals(NO_SALTING) ? null : bucketNum, columns, stats, dataTableName, indexes);
+                    bucketNum.equals(NO_SALTING) ? null : bucketNum, columns, stats, dataTableName, indexes, isImmutableRows);
         } catch (SQLException e) {
             throw new RuntimeException(e); // Impossible
         }
@@ -567,13 +595,16 @@ public class PTableImpl implements PTable {
         WritableUtils.writeVLong(output, sequenceNumber);
         output.writeLong(timeStamp);
         Bytes.writeByteArray(output, pkName == null ? ByteUtil.EMPTY_BYTE_ARRAY : pkName.getBytes());
-        if (bucketNum != null) {
-            WritableUtils.writeVInt(output, bucketNum);
-        } else {
+        int offset = 0, nColumns = allColumns.size();
+        if (bucketNum == null) {
             WritableUtils.writeVInt(output, NO_SALTING);
+        } else {
+            offset = 1;
+            nColumns--;
+            WritableUtils.writeVInt(output, bucketNum);
         }
-        WritableUtils.writeVInt(output, allColumns.size());
-        for (int i = 0; i < allColumns.size(); i++) {
+        WritableUtils.writeVInt(output, nColumns);
+        for (int i = offset; i < allColumns.size(); i++) {
             PColumn column = allColumns.get(i);
             column.write(output);
         }
@@ -581,6 +612,7 @@ public class PTableImpl implements PTable {
         for (PTable index: indexes) {
             index.write(output);
         }
+        output.writeBoolean(isImmutableRows);
         stats.write(output);
         Bytes.writeByteArray(output, dataTableName == null ? ByteUtil.EMPTY_BYTE_ARRAY : dataTableName.getBytes());
     }

@@ -113,27 +113,28 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
     }
     
     protected static interface ExecutableStatement extends SQLStatement {
-        public PhoenixResultSet executeQuery() throws SQLException;
         public boolean execute() throws SQLException;
         public int executeUpdate() throws SQLException;
+        public PhoenixResultSet executeQuery() throws SQLException;
         public ResultSetMetaData getResultSetMetaData() throws SQLException;
+        public StatementPlan optimizePlan() throws SQLException;
         public StatementPlan compilePlan(List<Object> binds) throws SQLException;
     }
     
     protected static interface MutatableStatement extends ExecutableStatement {
         @Override
-        public MutationPlan compilePlan(List<Object> binds) throws SQLException;
+        public MutationPlan optimizePlan() throws SQLException;
     }
     
     private class ExecutableSelectStatement extends SelectStatement implements ExecutableStatement {
-        private ExecutableSelectStatement(List<TableNode> from, HintNode hint, boolean isDistinct, List<AliasedNode> select, ParseNode where,
-                List<ParseNode> groupBy, ParseNode having, List<OrderByNode> orderBy, LimitNode limit, int bindCount) {
-            super(from, hint, isDistinct, select, where, groupBy, having, orderBy, limit, bindCount);
+        private ExecutableSelectStatement(List<? extends TableNode> from, HintNode hint, boolean isDistinct, List<AliasedNode> select, ParseNode where,
+                List<ParseNode> groupBy, ParseNode having, List<OrderByNode> orderBy, LimitNode limit, int bindCount, boolean isAggregate) {
+            super(from, hint, isDistinct, select, where, groupBy, having, orderBy, limit, bindCount, isAggregate);
         }
 
         @Override
         public PhoenixResultSet executeQuery() throws SQLException {
-            QueryPlan plan = compilePlan(getParameters());
+            QueryPlan plan = optimizePlan();
             Scanner scanner = plan.getScanner();
             PhoenixResultSet rs = newResultSet(scanner);
             resultSets.add(rs);
@@ -155,8 +156,13 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
         }
 
         @Override
-        public QueryPlan compilePlan(List<Object> binds) throws SQLException {
-            return lastQueryPlan = connection.getQueryServices().getOptimizer().optimize(this, PhoenixStatement.this, binds);
+        public QueryPlan optimizePlan() throws SQLException {
+            return lastQueryPlan = connection.getQueryServices().getOptimizer().optimize(this, PhoenixStatement.this);
+        }
+        
+        @Override
+        public StatementPlan compilePlan(List<Object> binds) throws SQLException {
+            return new QueryCompiler(connection, getMaxRows()).compile(this, binds);
         }
         
         @Override
@@ -208,7 +214,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
         @Override
         public int executeUpdate() throws SQLException {
             lastUpdateOperation = UpdateOperation.UPSERTED;
-            return executeMutation(compilePlan(getParameters()));
+            return executeMutation(optimizePlan());
         }
 
         @Override
@@ -220,6 +226,11 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
         public MutationPlan compilePlan(List<Object> binds) throws SQLException {
             UpsertCompiler compiler = new UpsertCompiler(PhoenixStatement.this);
             return compiler.compile(this, binds);
+        }
+        
+        @Override
+        public MutationPlan optimizePlan() throws SQLException {
+            return compilePlan(getParameters());
         }
     }
     
@@ -242,7 +253,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
         @Override
         public int executeUpdate() throws SQLException {
             lastUpdateOperation = UpdateOperation.DELETED;
-            return executeMutation(compilePlan(getParameters()));
+            return executeMutation(optimizePlan());
         }
 
         @Override
@@ -254,6 +265,11 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
         public MutationPlan compilePlan(List<Object> binds) throws SQLException {
             DeleteCompiler compiler = new DeleteCompiler(connection);
             return compiler.compile(this, binds);
+        }
+        
+        @Override
+        public MutationPlan optimizePlan() throws SQLException {
+            return compilePlan(getParameters());
         }
     }
     
@@ -275,7 +291,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
 
         @Override
         public int executeUpdate() throws SQLException {
-            MutationPlan plan = compilePlan(getParameters());
+            MutationPlan plan = optimizePlan();
             MutationState state = plan.execute();
             lastQueryPlan = null;
             lastResultSet = null;
@@ -293,6 +309,11 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
         public MutationPlan compilePlan(List<Object> binds) throws SQLException {
             CreateTableCompiler compiler = new CreateTableCompiler(connection);
             return compiler.compile(this, binds);
+        }
+        
+        @Override
+        public MutationPlan optimizePlan() throws SQLException {
+            return compilePlan(getParameters());
         }
     }
 
@@ -316,7 +337,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
 
         @Override
         public int executeUpdate() throws SQLException {
-            MutationPlan plan = compilePlan(getParameters());
+            MutationPlan plan = optimizePlan();
             MutationState state = plan.execute();
             lastQueryPlan = null;
             lastResultSet = null;
@@ -335,7 +356,11 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
             CreateIndexCompiler compiler = new CreateIndexCompiler(connection);
             return compiler.compile(this, binds);
         }
-
+        
+        @Override
+        public MutationPlan optimizePlan() throws SQLException {
+            return compilePlan(getParameters());
+        }
     }
 
     private class ExecutableDropTableStatement extends DropTableStatement implements ExecutableStatement {
@@ -385,6 +410,11 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
                     return new ExplainPlan(Collections.singletonList("DROP TABLE"));
                 }
             };
+        }
+        
+        @Override
+        public StatementPlan optimizePlan() throws SQLException {
+            return compilePlan(getParameters());
         }
     }
 
@@ -436,6 +466,66 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
                 }
             };
         }
+        
+        @Override
+        public StatementPlan optimizePlan() throws SQLException {
+            return compilePlan(getParameters());
+        }
+    }
+
+    private class ExecutableAlterIndexStatement extends AlterIndexStatement implements ExecutableStatement {
+
+        public ExecutableAlterIndexStatement(NamedTableNode indexTableNode, String dataTableName, boolean ifExists, PIndexState state) {
+            super(indexTableNode, dataTableName, ifExists, state);
+        }
+
+        @Override
+        public PhoenixResultSet executeQuery() throws SQLException {
+            throw new ExecuteQueryNotApplicableException("ALTER INDEX", this.toString());
+        }
+
+        @Override
+        public boolean execute() throws SQLException {
+            executeUpdate();
+            return false;
+        }
+
+        @Override
+        public int executeUpdate() throws SQLException {
+            MetaDataClient client = new MetaDataClient(connection);
+            MutationState state = client.alterIndex(this);
+            lastQueryPlan = null;
+            lastResultSet = null;
+            lastUpdateCount = (int)Math.min(state.getUpdateCount(), Integer.MAX_VALUE);
+            lastUpdateOperation = UpdateOperation.UPSERTED;
+            return lastUpdateCount;
+        }
+
+        @Override
+        public ResultSetMetaData getResultSetMetaData() throws SQLException {
+            return null;
+        }
+
+        @Override
+        public StatementPlan compilePlan(List<Object> binds) throws SQLException {
+            return new StatementPlan() {
+                
+                @Override
+                public ParameterMetaData getParameterMetaData() {
+                    return PhoenixParameterMetaData.EMPTY_PARAMETER_META_DATA;
+                }
+                
+                @Override
+                public ExplainPlan getExplainPlan() throws SQLException {
+                    return new ExplainPlan(Collections.singletonList("ALTER INDEX"));
+                }
+            };
+        }
+        
+        @Override
+        public StatementPlan optimizePlan() throws SQLException {
+            return compilePlan(getParameters());
+        }
     }
 
     private class ExecutableAddColumnStatement extends AddColumnStatement implements ExecutableStatement {
@@ -486,6 +576,11 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
                 }
             };
         }
+        
+        @Override
+        public StatementPlan optimizePlan() throws SQLException {
+            return compilePlan(getParameters());
+        }
     }
 
     private class ExecutableDropColumnStatement extends DropColumnStatement implements ExecutableStatement {
@@ -535,6 +630,11 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
                     return new ExplainPlan(Collections.singletonList("ALTER TABLE DROP COLUMN"));
                 }
             };
+        }
+        
+        @Override
+        public StatementPlan optimizePlan() throws SQLException {
+            return compilePlan(getParameters());
         }
     }
 
@@ -591,7 +691,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
 
         @Override
         public PhoenixResultSet executeQuery() throws SQLException {
-            StatementPlan plan = getStatement().compilePlan(getParameters());
+            StatementPlan plan = getStatement().optimizePlan();
             List<String> planSteps = plan.getExplainPlan().getPlanSteps();
             List<Tuple> tuples = Lists.newArrayListWithExpectedSize(planSteps.size());
             for (String planStep : planSteps) {
@@ -625,6 +725,11 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
         @Override
         public StatementPlan compilePlan(List<Object> binds) throws SQLException {
             return StatementPlan.EMPTY_PLAN;
+        }
+        
+        @Override
+        public StatementPlan optimizePlan() throws SQLException {
+            return compilePlan(getParameters());
         }
     }
 
@@ -675,14 +780,19 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
                 }
             };
         }
+        
+        @Override
+        public StatementPlan optimizePlan() throws SQLException {
+            return compilePlan(getParameters());
+        }
     }
 
     protected class ExecutableNodeFactory extends ParseNodeFactory {
         @Override
-        public ExecutableSelectStatement select(List<TableNode> from, HintNode hint, boolean isDistinct, List<AliasedNode> select,
+        public ExecutableSelectStatement select(List<? extends TableNode> from, HintNode hint, boolean isDistinct, List<AliasedNode> select,
                                                 ParseNode where, List<ParseNode> groupBy, ParseNode having,
-                                                List<OrderByNode> orderBy, LimitNode limit, int bindCount) {
-            return new ExecutableSelectStatement(from, hint, isDistinct, select, where, groupBy == null ? Collections.<ParseNode>emptyList() : groupBy, having, orderBy == null ? Collections.<OrderByNode>emptyList() : orderBy, limit, bindCount);
+                                                List<OrderByNode> orderBy, LimitNode limit, int bindCount, boolean isAggregate) {
+            return new ExecutableSelectStatement(from, hint, isDistinct, select, where, groupBy == null ? Collections.<ParseNode>emptyList() : groupBy, having, orderBy == null ? Collections.<OrderByNode>emptyList() : orderBy, limit, bindCount, isAggregate);
         }
         
         @Override
@@ -723,6 +833,11 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
         @Override
         public DropIndexStatement dropIndex(NamedNode indexName, TableName tableName, boolean ifExists) {
             return new ExecutableDropIndexStatement(indexName, tableName, ifExists);
+        }
+        
+        @Override
+        public AlterIndexStatement alterIndex(NamedTableNode indexTableNode, String dataTableName, boolean ifExists, PIndexState state) {
+            return new ExecutableAlterIndexStatement(indexTableNode, dataTableName, ifExists, state);
         }
         
         @Override
@@ -797,7 +912,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
         }
     }
 
-    protected List<Object> getParameters() {
+    public List<Object> getParameters() {
         return Collections.<Object>emptyList();
     }
     
@@ -829,9 +944,9 @@ public class PhoenixStatement implements Statement, SQLCloseable, com.salesforce
         return parseStatement(sql).execute();
     }
 
-    public QueryPlan compileQuery(String sql) throws SQLException {
+    public QueryPlan optimizeQuery(String sql) throws SQLException {
         throwIfUnboundParameters();
-        return (QueryPlan)parseStatement(sql).compilePlan(this.getParameters());
+        return (QueryPlan)parseStatement(sql).optimizePlan();
     }
 
     @Override

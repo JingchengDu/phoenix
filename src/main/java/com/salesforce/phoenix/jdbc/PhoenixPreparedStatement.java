@@ -75,7 +75,7 @@ public class PhoenixPreparedStatement extends PhoenixStatement implements Prepar
     }
 
     @Override
-    protected List<Object> getParameters() {
+    public List<Object> getParameters() {
         return parameters;
     }
 
@@ -91,9 +91,9 @@ public class PhoenixPreparedStatement extends PhoenixStatement implements Prepar
         return statement.executeQuery();
     }
 
-    public QueryPlan compileQuery() throws SQLException {
+    public QueryPlan optimizeQuery() throws SQLException {
         throwIfUnboundParameters();
-        return (QueryPlan)statement.compilePlan(this.getParameters());
+        return (QueryPlan)statement.optimizePlan();
     }
 
 
@@ -182,8 +182,7 @@ public class PhoenixPreparedStatement extends PhoenixStatement implements Prepar
 
     @Override
     public void setBoolean(int parameterIndex, boolean x) throws SQLException {
-        // TODO: need type info for parameters to support this
-        throw new SQLFeatureNotSupportedException();
+        parameters.set(parameterIndex - 1, x);
     }
 
     @Override

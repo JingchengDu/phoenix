@@ -30,8 +30,7 @@ package com.salesforce.phoenix.query;
 import java.sql.SQLException;
 import java.util.*;
 
-import org.apache.hadoop.hbase.HRegionInfo;
-import org.apache.hadoop.hbase.ServerName;
+import org.apache.hadoop.hbase.*;
 import org.apache.hadoop.hbase.client.*;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.util.Pair;
@@ -75,14 +74,14 @@ public class DelegateConnectionQueryServices extends DelegateQueryServices imple
     }
 
     @Override
-    public PMetaData addTable(String schemaName, PTable table, PTable parentTable) throws SQLException {
-        return getDelegate().addTable(schemaName, table, parentTable);
+    public PMetaData addTable(String schemaName, PTable table) throws SQLException {
+        return getDelegate().addTable(schemaName, table);
     }
 
     @Override
-    public PMetaData addColumn(String schemaName, String tableName, List<PColumn> columns, long tableSeqNum,
-            long tableTimeStamp) throws SQLException {
-        return getDelegate().addColumn(schemaName, tableName, columns, tableSeqNum, tableTimeStamp);
+    public PMetaData addColumn(String schemaName, String tableName, List<PColumn> columns, long tableTimeStamp,
+            long tableSeqNum, boolean isImmutableRows) throws SQLException {
+        return getDelegate().addColumn(schemaName, tableName, columns, tableTimeStamp, tableSeqNum, isImmutableRows);
     }
 
     @Override
@@ -93,8 +92,8 @@ public class DelegateConnectionQueryServices extends DelegateQueryServices imple
 
     @Override
     public PMetaData removeColumn(String schemaName, String tableName, String familyName, String columnName,
-            long tableSeqNum, long tableTimeStamp) throws SQLException {
-        return getDelegate().removeColumn(schemaName, tableName, familyName, columnName, tableSeqNum, tableTimeStamp);
+            long tableTimeStamp, long tableSeqNum) throws SQLException {
+        return getDelegate().removeColumn(schemaName, tableName, familyName, columnName, tableTimeStamp, tableSeqNum);
     }
 
     @Override
@@ -130,8 +129,8 @@ public class DelegateConnectionQueryServices extends DelegateQueryServices imple
     }
 
     @Override
-    public MetaDataMutationResult updateIndexState(List<Mutation> tableMetadata) throws SQLException {
-        return getDelegate().updateIndexState(tableMetadata);
+    public MetaDataMutationResult updateIndexState(List<Mutation> tableMetadata, String parentTableName) throws SQLException {
+        return getDelegate().updateIndexState(tableMetadata, parentTableName);
     }
     
     @Override
@@ -152,5 +151,10 @@ public class DelegateConnectionQueryServices extends DelegateQueryServices imple
     @Override
     public HBaseAdmin getAdmin() throws SQLException {
         return getDelegate().getAdmin();
+    }
+
+    @Override
+    public HTableDescriptor getTableDescriptor(byte[] tableName) throws SQLException {
+        return getDelegate().getTableDescriptor(tableName);
     }
 }

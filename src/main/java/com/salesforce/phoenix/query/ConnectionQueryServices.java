@@ -30,8 +30,7 @@ package com.salesforce.phoenix.query;
 import java.sql.SQLException;
 import java.util.*;
 
-import org.apache.hadoop.hbase.HRegionInfo;
-import org.apache.hadoop.hbase.ServerName;
+import org.apache.hadoop.hbase.*;
 import org.apache.hadoop.hbase.client.*;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.util.Pair;
@@ -62,6 +61,8 @@ public interface ConnectionQueryServices extends QueryServices, MetaDataMutated 
      */
     public HTableInterface getTable(byte[] tableName) throws SQLException;
 
+    public HTableDescriptor getTableDescriptor(byte[] tableName) throws SQLException;
+
     public StatsManager getStatsManager();
 
     public NavigableMap<HRegionInfo, ServerName> getAllTableRegions(TableRef table) throws SQLException;
@@ -73,7 +74,7 @@ public interface ConnectionQueryServices extends QueryServices, MetaDataMutated 
     public MetaDataMutationResult dropTable(List<Mutation> tableMetadata, PTableType tableType) throws SQLException;
     public MetaDataMutationResult addColumn(List<Mutation> tableMetaData, boolean isView, Pair<byte[],Map<String,Object>> family) throws SQLException;
     public MetaDataMutationResult dropColumn(List<Mutation> tableMetadata, byte[] emptyCF) throws SQLException;
-    public MetaDataMutationResult updateIndexState(List<Mutation> tableMetadata) throws SQLException;
+    public MetaDataMutationResult updateIndexState(List<Mutation> tableMetadata, String parentTableName) throws SQLException;
     public MutationState updateData(MutationPlan plan) throws SQLException;
 
     public void init(String url, Properties props) throws SQLException;

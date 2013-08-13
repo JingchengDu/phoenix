@@ -123,6 +123,8 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData, com.salesforce
     public static final String SOURCE_DATA_TYPE = "SOURCE_DATA_TYPE";
     public static final String IS_AUTOINCREMENT = "IS_AUTOINCREMENT";
     public static final String COLUMN_MODIFIER = "COLUMN_MODIFIER";
+    public static final String IMMUTABLE_ROWS = "IMMUTABLE_ROWS";
+    public static final byte[] IMMUTABLE_ROWS_BYTES = Bytes.toBytes(IMMUTABLE_ROWS);
 
     public static final String TABLE_FAMILY = QueryConstants.DEFAULT_COLUMN_FAMILY_NAME.getString();
     public static final byte[] TABLE_FAMILY_BYTES = QueryConstants.DEFAULT_COLUMN_FAMILY_NAME.getBytes();
@@ -246,7 +248,7 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData, com.salesforce
             buf.append(conjunction + TABLE_SCHEM_NAME + (schemaPattern.length() == 0 ? " is null" : " like '" + SchemaUtil.normalizeIdentifier(schemaPattern) + "'" ));
             conjunction = " and ";
         }
-        if (tableNamePattern != null) {
+        if (tableNamePattern != null && tableNamePattern.length() > 0) {
             buf.append(conjunction + TABLE_NAME_NAME + " like '" + SchemaUtil.normalizeIdentifier(tableNamePattern) + "'" );
             conjunction = " and ";
         }
@@ -258,7 +260,7 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData, com.salesforce
             buf.append(conjunction + TABLE_CAT_NAME + " like '" + SchemaUtil.normalizeIdentifier(catalog) + "'" );
             conjunction = " and ";
         }
-        if (columnNamePattern != null) {
+        if (columnNamePattern != null && columnNamePattern.length() > 0) {
             buf.append(conjunction + COLUMN_NAME + " like '" + SchemaUtil.normalizeIdentifier(columnNamePattern) + "'" );
         } else {
             buf.append(conjunction + COLUMN_NAME + " is not null" );
@@ -358,8 +360,39 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData, com.salesforce
     @Override
     public ResultSet getIndexInfo(String catalog, String schema, String table, boolean unique, boolean approximate)
             throws SQLException {
-        return emptyResultSet;
+        // Catalogs are not supported for schemas
+        if (catalog != null && catalog.length() > 0) {
+            return emptyResultSet;
+        }
+        if (unique) { // No unique indexes
+            return emptyResultSet;
+        }
+        StringBuilder buf = new StringBuilder("select /*+" + Hint.NO_INTRA_REGION_PARALLELIZATION + "*/\n" +
+                "null " + TABLE_CAT_NAME + ",\n" + // use this column for column family name
+                TABLE_SCHEM_NAME + ",\n" +
+                DATA_TABLE_NAME + " " + TABLE_NAME_NAME + ",\n" +
+                "true NON_UNIQUE,\n" +
+                "null INDEX_QUALIFIER,\n" +
+                TABLE_NAME_NAME + " INDEX_NAME,\n" +
+                DatabaseMetaData.tableIndexOther + " TYPE,\n" + 
+                ORDINAL_POSITION + ",\n" +
+                COLUMN_NAME + ",\n" +
+                "CASE WHEN " + TABLE_CAT_NAME + " IS NOT NULL THEN null WHEN " + COLUMN_MODIFIER + " = " + ColumnModifier.toSystemValue(ColumnModifier.SORT_DESC) + " THEN 'D' ELSE 'A' END ASC_OR_DESC,\n" +
+                "null CARDINALITY,\n" +
+                "null PAGES,\n" +
+                "null FILTER_CONDITION,\n" +
+                DATA_TYPE + ",\n" + // Include data type info, though not in spec
+                SqlTypeNameFunction.NAME + "(" + DATA_TYPE + ") AS " + TYPE_NAME +
+                "\nfrom " + TYPE_SCHEMA_AND_TABLE + 
+                "\nwhere ");
+        buf.append(TABLE_SCHEM_NAME + (schema == null || schema.length() == 0 ? " is null" : " = '" + SchemaUtil.normalizeIdentifier(schema) + "'" ));
+        buf.append("\nand " + DATA_TABLE_NAME + " = '" + SchemaUtil.normalizeIdentifier(table) + "'" );
+        buf.append("\nand " + COLUMN_NAME + " is not null" );
+        buf.append("\norder by INDEX_NAME," + ORDINAL_POSITION);
+        Statement stmt = connection.createStatement();
+        return stmt.executeQuery(buf.toString());
     }
+
 
     @Override
     public int getJDBCMajorVersion() throws SQLException {
@@ -493,7 +526,10 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData, com.salesforce
                 TABLE_NAME_NAME + " ," +
                 COLUMN_NAME + "," +
                 "null as KEY_SEQ," +
-                "PK_NAME" +
+                "PK_NAME" + "," +
+                "CASE WHEN " + COLUMN_MODIFIER + " = " + ColumnModifier.toSystemValue(ColumnModifier.SORT_DESC) + " THEN 'D' ELSE 'A' END ASC_OR_DESC," +
+                DATA_TYPE + "," + // include type info, though not in spec
+                SqlTypeNameFunction.NAME + "(" + DATA_TYPE + ") AS " + TYPE_NAME +
                 " from " + TYPE_SCHEMA_AND_TABLE + 
                 " where ");
         buf.append(TABLE_SCHEM_NAME + (schema == null || schema.length() == 0 ? " is null" : " = '" + SchemaUtil.normalizeIdentifier(schema) + "'" ));
@@ -757,7 +793,9 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData, com.salesforce
                 REMARKS_NAME + " ," +
                 TYPE_NAME + "," +
                 SELF_REFERENCING_COL_NAME_NAME + "," +
-                REF_GENERATION_NAME +
+                REF_GENERATION_NAME + "," +
+                INDEX_STATE + "," +
+                IMMUTABLE_ROWS +
                 " from " + TYPE_SCHEMA_AND_TABLE + 
                 " where " + COLUMN_NAME + " is null" +
                 " and " + TABLE_CAT_NAME + " is null");

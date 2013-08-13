@@ -25,16 +25,44 @@
  * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE 
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  ******************************************************************************/
-package com.salesforce.phoenix.compile;
+package com.salesforce.phoenix.parse;
 
-import java.sql.SQLException;
 import java.util.List;
 
-import com.salesforce.phoenix.schema.PColumn;
-import com.salesforce.phoenix.schema.TableRef;
+import com.google.common.collect.Lists;
 
+public class ParseContext {
+    private boolean isAggregate;
+    
+    public ParseContext() {
+    }
 
-public interface PostOpCompiler {
+    public boolean isAggregate() {
+        return isAggregate;
+    }
 
-    public MutationPlan compile(TableRef tableRef, byte[] emptyCF, List<PColumn> deleteList, long timestamp) throws SQLException;
+    public void setAggregate(boolean isAggregate) {
+        this.isAggregate |= isAggregate;
+    }
+
+    public static class Stack {
+        private final List<ParseContext> stack = Lists.newArrayListWithExpectedSize(5);
+        
+        public void push(ParseContext context) {
+            stack.add(context);
+        }
+        
+        public ParseContext pop() {
+            return stack.remove(stack.size()-1);
+        }
+        
+        public ParseContext peek() {
+            return stack.get(stack.size()-1);
+        }
+        
+        public boolean isEmpty() {
+            return stack.isEmpty();
+        }
+    }
+    
 }

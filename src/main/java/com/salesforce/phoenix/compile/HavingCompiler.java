@@ -60,7 +60,6 @@ public class HavingCompiler {
         if (!expressionBuilder.isAggregate()) {
             throw new SQLExceptionInfo.Builder(SQLExceptionCode.ONLY_AGGREGATE_IN_HAVING_CLAUSE).build().buildException();
         }
-        context.setAggregate(true);
         return expression;
     }
 
@@ -216,6 +215,11 @@ public class HavingCompiler {
 
         @Override
         public boolean visitEnter(DivideParseNode node) throws SQLException {
+            return true;
+        }
+
+        @Override
+        public boolean visitEnter(BetweenParseNode node) throws SQLException {
             return true;
         }
     }

@@ -27,21 +27,26 @@
  ******************************************************************************/
 package com.salesforce.phoenix.query;
 
+import static com.salesforce.phoenix.jdbc.PhoenixDatabaseMetaData.TABLE_FAMILY_BYTES;
+
 import java.sql.SQLException;
 import java.util.*;
 
-import org.apache.hadoop.hbase.HRegionInfo;
-import org.apache.hadoop.hbase.ServerName;
+import org.apache.hadoop.hbase.*;
 import org.apache.hadoop.hbase.client.*;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
+import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Pair;
 
 import com.salesforce.phoenix.compile.MutationPlan;
+import com.salesforce.phoenix.coprocessor.*;
 import com.salesforce.phoenix.coprocessor.MetaDataProtocol.MetaDataMutationResult;
 import com.salesforce.phoenix.coprocessor.MetaDataProtocol.MutationCode;
 import com.salesforce.phoenix.execute.MutationState;
 import com.salesforce.phoenix.jdbc.PhoenixConnection;
+import com.salesforce.phoenix.jdbc.PhoenixDatabaseMetaData;
 import com.salesforce.phoenix.schema.*;
+import com.salesforce.phoenix.util.PhoenixRuntime;
 import com.salesforce.phoenix.util.SchemaUtil;
 
 
@@ -82,14 +87,14 @@ public class ConnectionlessQueryServicesImpl extends DelegateQueryServices imple
     }
 
     @Override
-    public PMetaData addTable(String schemaName, PTable table, PTable parentTable) throws SQLException {
-        return metaData = metaData.addTable(schemaName, table, parentTable);
+    public PMetaData addTable(String schemaName, PTable table) throws SQLException {
+        return metaData = metaData.addTable(schemaName, table);
     }
 
     @Override
-    public PMetaData addColumn(String schemaName, String tableName, List<PColumn> columns, long tableSeqNum,
-            long tableTimeStamp) throws SQLException {
-        return metaData = metaData.addColumn(schemaName, tableName, columns, tableSeqNum, tableTimeStamp);
+    public PMetaData addColumn(String schemaName, String tableName, List<PColumn> columns, long tableTimeStamp,
+            long tableSeqNum, boolean isImmutableRows) throws SQLException {
+        return metaData = metaData.addColumn(schemaName, tableName, columns, tableTimeStamp, tableSeqNum, isImmutableRows);
     }
 
     @Override
@@ -100,8 +105,8 @@ public class ConnectionlessQueryServicesImpl extends DelegateQueryServices imple
 
     @Override
     public PMetaData removeColumn(String schemaName, String tableName, String familyName, String columnName,
-            long tableSeqNum, long tableTimeStamp) throws SQLException {
-        return metaData = metaData.removeColumn(schemaName, tableName, familyName, columnName, tableSeqNum, tableTimeStamp);
+            long tableTimeStamp, long tableSeqNum) throws SQLException {
+        return metaData = metaData.removeColumn(schemaName, tableName, familyName, columnName, tableTimeStamp, tableSeqNum);
     }
 
     
@@ -139,7 +144,28 @@ public class ConnectionlessQueryServicesImpl extends DelegateQueryServices imple
 
     @Override
     public void init(String url, Properties props) throws SQLException {
-        SchemaUtil.initMetaData(this, url, new Properties());
+        props = new Properties(props);
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(MetaDataProtocol.MIN_SYSTEM_TABLE_TIMESTAMP));
+        PhoenixConnection metaConnection = new PhoenixConnection(this, url, props, PMetaDataImpl.EMPTY_META_DATA);
+        SQLException sqlE = null;
+        try {
+            metaConnection.createStatement().executeUpdate(QueryConstants.CREATE_METADATA);
+        } catch (SQLException e) {
+            sqlE = e;
+        } finally {
+            try {
+                metaConnection.close();
+            } catch (SQLException e) {
+                if (sqlE != null) {
+                    sqlE.setNextException(e);
+                } else {
+                    sqlE = e;
+                }
+            }
+            if (sqlE != null) {
+                throw sqlE;
+            }
+        }
     }
 
     @Override
@@ -158,7 +184,21 @@ public class ConnectionlessQueryServicesImpl extends DelegateQueryServices imple
     }
 
     @Override
-    public MetaDataMutationResult updateIndexState(List<Mutation> tableMetadata) {
+    public MetaDataMutationResult updateIndexState(List<Mutation> tableMetadata, String parentTableName) throws SQLException {
+        byte[][] rowKeyMetadata = new byte[2][];
+        SchemaUtil.getVarChars(tableMetadata.get(0).getRow(), rowKeyMetadata);
+        KeyValue newKV = tableMetadata.get(0).getFamilyMap().get(TABLE_FAMILY_BYTES).get(0);
+        PIndexState newState =  PIndexState.fromSerializedValue(newKV.getBuffer()[newKV.getValueOffset()]);
+        String schemaName = Bytes.toString(rowKeyMetadata[PhoenixDatabaseMetaData.SCHEMA_NAME_INDEX]);
+        String indexName = Bytes.toString(rowKeyMetadata[PhoenixDatabaseMetaData.TABLE_NAME_INDEX]);
+        PSchema schema = metaData.getSchema(schemaName);
+        PTable index = schema.getTable(indexName);
+        index = PTableImpl.makePTable(index,newState == PIndexState.ENABLE ? PIndexState.ACTIVE : newState == PIndexState.DISABLE ? PIndexState.INACTIVE : newState);
+        return new MetaDataMutationResult(MutationCode.TABLE_ALREADY_EXISTS, 0, index);
+    }
+
+    @Override
+    public HTableDescriptor getTableDescriptor(byte[] tableName) throws SQLException {
         return null;
     }
 }

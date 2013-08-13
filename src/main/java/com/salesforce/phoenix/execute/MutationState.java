@@ -57,9 +57,13 @@ public class MutationState implements SQLCloseable {
     private int numEntries = 0;
 
     public MutationState(int maxSize, PhoenixConnection connection) {
+        this(maxSize,connection,0);
+    }
+    
+    public MutationState(int maxSize, PhoenixConnection connection, long sizeOffset) {
         this.maxSize = maxSize;
         this.connection = connection;
-        this.sizeOffset = 0;
+        this.sizeOffset = sizeOffset;
     }
     
     public MutationState(TableRef table, Map<ImmutableBytesPtr,Map<PColumn,byte[]>> mutations, long sizeOffset, long maxSize, PhoenixConnection connection) {
@@ -98,6 +102,9 @@ public class MutationState implements SQLCloseable {
      * @param newMutation the newer mutation
      */
     public void join(MutationState newMutation) {
+        if (this == newMutation) { // Doesn't make sense
+            return;
+        }
         // Merge newMutation with this one, keeping state from newMutation for any overlaps
         for (Map.Entry<TableRef, Map<ImmutableBytesPtr,Map<PColumn,byte[]>>> entry : newMutation.mutations.entrySet()) {
             // Replace existing entries for the table with new entries
@@ -150,7 +157,7 @@ public class MutationState implements SQLCloseable {
         }
         final byte[] schemaName = Bytes.toBytes(tableRef.getSchema().getName());
         final Iterator<PTable> indexes = // Only maintain tables with immutable rows through this client-side mechanism
-                tableRef.getTable().getType() == PTableType.IMMUTABLE ? 
+                tableRef.getTable().isImmutableRows() ? 
                         tableRef.getTable().getIndexes().iterator() : 
                         Iterators.<PTable>emptyIterator();
         return new Iterator<Pair<byte[],List<Mutation>>>() {

@@ -92,6 +92,12 @@ public class PhoenixResultSet implements ResultSet, SQLCloseable, com.salesforce
     private boolean isClosed = false;
     private boolean wasNull = false;
     
+    public PhoenixResultSet(ResultIterator resultIterator, RowProjector rowProjector, PhoenixStatement statement) throws SQLException {
+        this.rowProjector = rowProjector;
+        this.scanner = resultIterator;
+        this.statement = statement;
+    }
+    
     public PhoenixResultSet(Scanner scanner, PhoenixStatement statement) throws SQLException {
         this.rowProjector = scanner.getProjection();
         this.scanner = scanner.iterator();
@@ -241,6 +247,8 @@ public class PhoenixResultSet implements ResultSet, SQLCloseable, com.salesforce
             return false;
         }
         switch(type) {
+        case BOOLEAN:
+            return Boolean.TRUE.equals(value);
         case VARCHAR:
             return !STRING_FALSE.equals(value);
         case INTEGER:
