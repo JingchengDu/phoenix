@@ -34,21 +34,23 @@ import java.util.concurrent.*;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.filter.FirstKeyOnlyFilter;
 import org.apache.hadoop.hbase.filter.PageFilter;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Pair;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Function;
 import com.salesforce.phoenix.compile.GroupByCompiler.GroupBy;
-import com.salesforce.phoenix.compile.StatementContext;
+import com.salesforce.phoenix.compile.*;
 import com.salesforce.phoenix.job.JobManager.JobCallable;
+import com.salesforce.phoenix.parse.FilterableStatement;
 import com.salesforce.phoenix.parse.HintNode;
 import com.salesforce.phoenix.query.*;
+import com.salesforce.phoenix.schema.PTable;
 import com.salesforce.phoenix.schema.TableRef;
 import com.salesforce.phoenix.util.*;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 
 /**
@@ -77,12 +79,33 @@ public class ParallelIterators extends ExplainTable implements ResultIterators {
         }
     };
 
-    public ParallelIterators(StatementContext context, TableRef table, HintNode hintNode, GroupBy groupBy, Integer limit, ParallelIteratorFactory iteratorFactory) throws SQLException {
-        super(context, table, groupBy);
-        this.splits = getSplits(context, table, hintNode);
+    public ParallelIterators(StatementContext context, TableRef tableRef, FilterableStatement statement, RowProjector projector, GroupBy groupBy, Integer limit, ParallelIteratorFactory iteratorFactory) throws SQLException {
+        super(context, tableRef, groupBy);
+        this.splits = getSplits(context, tableRef, statement.getHint());
         this.iteratorFactory = iteratorFactory;
+        Scan scan = context.getScan();
+        PTable table = tableRef.getTable();
+        if (projector.isProjectEmptyKeyValue()) {
+            Map<byte [], NavigableSet<byte []>> familyMap = scan.getFamilyMap();
+            // If nothing projected into scan and we only have one column family, just allow everything
+            // to be projected and use a FirstKeyOnlyFilter to skip from row to row. This turns out to
+            // be quite a bit faster.
+            if (familyMap.isEmpty() && table.getColumnFamilies().size() == 1) {
+                // Project the one column family. We must project a column family since it's possible
+                // that there are other non declared column families that we need to ignore.
+                scan.addFamily(table.getColumnFamilies().get(0).getName().getBytes());
+                ScanUtil.andFilterAtBeginning(scan, new FirstKeyOnlyFilter());
+            } else {
+                byte[] ecf = SchemaUtil.getEmptyColumnFamily(table.getColumnFamilies());
+                // Project empty key value unless the column family containing it has
+                // been projected in its entirety.
+                if (!familyMap.containsKey(ecf) || familyMap.get(ecf) != null) {
+                    scan.addColumn(ecf, QueryConstants.EMPTY_COLUMN_BYTES);
+                }
+            }
+        }
         if (limit != null) {
-            ScanUtil.andFilterAtEnd(context.getScan(), new PageFilter(limit));
+            ScanUtil.andFilterAtEnd(scan, new PageFilter(limit));
         }
     }
 
