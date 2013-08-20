@@ -2830,7 +2830,7 @@ public enum PDataType {
             byte[] bytes = toBytes(object);
             // Override because we need to allocate a new buffer in this case
             if (columnModifier != null) {
-                return columnModifier.apply(bytes, new byte[bytes.length], 0, bytes.length);
+                return columnModifier.apply(bytes, 0, new byte[bytes.length], 0, bytes.length);
             }
             return bytes;
         }
@@ -2945,7 +2945,7 @@ public enum PDataType {
         public byte[] toBytes(Object object, ColumnModifier columnModifier) {
             byte[] bytes = toBytes(object);
             if (columnModifier != null) {
-                return columnModifier.apply(bytes, new byte[bytes.length], 0, bytes.length);
+                return columnModifier.apply(bytes, 0, new byte[bytes.length], 0, bytes.length);
             }
             return bytes;
         }
@@ -3110,7 +3110,7 @@ public enum PDataType {
                 rhsColumnModifier = null;
             }            
             if (lhsColumnModifier != null) {
-                lhs = lhsColumnModifier.apply(lhs, new byte[lhs.length], lhsOffset, lhsLength);
+                lhs = lhsColumnModifier.apply(lhs, lhsOffset, new byte[lhsLength], 0, lhsLength);
             }                        
             return Bytes.compareTo(lhs, lhsOffset, lhsLength, rhsConverted, 0, rhsConverted.length);
         }
@@ -3121,7 +3121,7 @@ public enum PDataType {
                 lhsColumnModifier = null;
             }
             if (rhsColumnModifier != null) {
-                rhs = rhsColumnModifier.apply(rhs, new byte[rhs.length], rhsOffset, rhsLength);
+                rhs = rhsColumnModifier.apply(rhs, rhsOffset, new byte[rhsLength], 0, rhsLength);
             }            
             return Bytes.compareTo(lhsConverted, 0, lhsConverted.length, rhs, rhsOffset, rhsLength);
         }
@@ -3727,7 +3727,7 @@ public enum PDataType {
       @Override
       public byte decodeByte(byte[] b, int o, ColumnModifier columnModifier) {
         if (columnModifier != null) {
-          b = columnModifier.apply(b, new byte[b.length], o, Bytes.SIZEOF_BYTE);
+          b = columnModifier.apply(b, o, new byte[Bytes.SIZEOF_BYTE], 0, Bytes.SIZEOF_BYTE);
         }
         byte v = b[o];
         if (v < 0) {
@@ -3788,7 +3788,7 @@ public enum PDataType {
       @Override
       public short decodeShort(byte[] b, int o, ColumnModifier columnModifier) {
           if (columnModifier != null) {
-              b = columnModifier.apply(b, new byte[b.length], o, Bytes.SIZEOF_INT);
+              b = columnModifier.apply(b, o, new byte[Bytes.SIZEOF_INT], 0, Bytes.SIZEOF_INT);
           }
           short v = Bytes.toShort(b, o);
           if (v < 0) {
@@ -3815,7 +3815,7 @@ public enum PDataType {
         @Override
         public int decodeInt(byte[] b, int o, ColumnModifier columnModifier) {
             if (columnModifier != null) {
-                b = columnModifier.apply(b, new byte[b.length], o, Bytes.SIZEOF_INT);
+                b = columnModifier.apply(b, o, new byte[Bytes.SIZEOF_INT], 0, Bytes.SIZEOF_INT);
             }
             int v = Bytes.toInt(b, o);
             if (v < 0) {
@@ -4046,12 +4046,16 @@ public enum PDataType {
             if (v < 0) {
                 throw new IllegalDataException();
             }
-            return super.encodeFloat(v, b, o);
+            Bytes.putFloat(b, o, v);
+            return Bytes.SIZEOF_FLOAT;
         }
         
         @Override
         public float decodeFloat(byte[] b, int o, ColumnModifier columnModifier) {
-            float v = super.decodeFloat(b, o, columnModifier);
+            if (columnModifier != null) {
+                b = columnModifier.apply(b, o, new byte[Bytes.SIZEOF_FLOAT], 0, Bytes.SIZEOF_FLOAT);
+            }
+            float v = Bytes.toFloat(b, o);
             if (v < 0) {
                 throw new IllegalDataException();
             }
@@ -4068,13 +4072,17 @@ public enum PDataType {
             if (v < 0) {
                 throw new IllegalDataException();
             }
-            return super.encodeDouble(v, b, o);
+            Bytes.putDouble(b, o, v);
+            return Bytes.SIZEOF_DOUBLE;
         }
         
         @Override
         public double decodeDouble(byte[] b, int o,
                 ColumnModifier columnModifier) {
-            double v = super.decodeDouble(b, o, columnModifier);
+            if (columnModifier != null) {
+                b = columnModifier.apply(b, o, new byte[Bytes.SIZEOF_DOUBLE], 0, Bytes.SIZEOF_DOUBLE);
+            }
+            double v = Bytes.toDouble(b, o);
             if (v < 0) {
                 throw new IllegalDataException();
             }
@@ -4117,13 +4125,13 @@ public enum PDataType {
     public static final byte[] MOD_FALSE_BYTES[] = new byte[ColumnModifier.values().length][];
     static {
         for (ColumnModifier columnModifier : ColumnModifier.values()) {
-            MOD_FALSE_BYTES[columnModifier.ordinal()] = columnModifier.apply(FALSE_BYTES, new byte[FALSE_BYTES.length], 0, FALSE_BYTES.length);
+            MOD_FALSE_BYTES[columnModifier.ordinal()] = columnModifier.apply(FALSE_BYTES, 0, new byte[FALSE_BYTES.length], 0, FALSE_BYTES.length);
         }
     }
     public static final byte[] MOD_TRUE_BYTES[] = new byte[ColumnModifier.values().length][];
     static {
         for (ColumnModifier columnModifier : ColumnModifier.values()) {
-            MOD_TRUE_BYTES[columnModifier.ordinal()] = columnModifier.apply(TRUE_BYTES, new byte[TRUE_BYTES.length], 0, TRUE_BYTES.length);
+            MOD_TRUE_BYTES[columnModifier.ordinal()] = columnModifier.apply(TRUE_BYTES, 0, new byte[TRUE_BYTES.length], 0, TRUE_BYTES.length);
         }
     }
     public static final byte[] NULL_BYTES = ByteUtil.EMPTY_BYTE_ARRAY;
@@ -4371,10 +4379,10 @@ public enum PDataType {
         boolean invertResult = (mod1 == ColumnModifier.SORT_DESC && mod2 == ColumnModifier.SORT_DESC);
         if (!invertResult) {
             if (mod1 != null) {
-                b1 = mod1.apply(b1, new byte[b1.length], offset1, length1);
+                b1 = mod1.apply(b1, offset1, new byte[length1], 0, length1);
             }
             if (mod2 != null) {
-                b2 = mod2.apply(b2, new byte[b2.length], offset2, length2);
+                b2 = mod2.apply(b2, offset2, new byte[length2], 0, length2);
             }            
             resultMultiplier = 1;
         }
@@ -4399,7 +4407,7 @@ public enum PDataType {
     public byte[] toBytes(Object object, ColumnModifier columnModifier) {
     	byte[] bytes = toBytes(object);
     	if (columnModifier != null) {
-            columnModifier.apply(bytes, bytes, 0, bytes.length);
+            columnModifier.apply(bytes, 0, bytes, 0, bytes.length);
     	}
     	return bytes;
     }
@@ -4421,7 +4429,7 @@ public enum PDataType {
             }
             // TODO: generalize ColumnModifier?
             byte[] b = ptr.copyBytes();
-            ColumnModifier.SORT_DESC.apply(b, b, 0, b.length);
+            ColumnModifier.SORT_DESC.apply(b, 0, b, 0, b.length);
             ptr.set(b);
             return;
         }
@@ -4470,7 +4478,8 @@ public enum PDataType {
 
     public Object toObject(byte[] bytes, int offset, int length, PDataType actualType, ColumnModifier columnModifier) {
     	if (columnModifier != null) {
-    	    bytes = columnModifier.apply(bytes, new byte[bytes.length], offset, length);
+    	    bytes = columnModifier.apply(bytes, offset, new byte[length], 0, length);
+    	    offset = 0;
     	}
         Object o = actualType.toObject(bytes, offset, length);
         return this.toObject(o, actualType);

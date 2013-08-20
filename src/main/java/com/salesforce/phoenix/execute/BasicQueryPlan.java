@@ -36,7 +36,9 @@ import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import com.salesforce.phoenix.compile.*;
 import com.salesforce.phoenix.compile.GroupByCompiler.GroupBy;
 import com.salesforce.phoenix.compile.OrderByCompiler.OrderBy;
+import com.salesforce.phoenix.iterate.ParallelIterators.ParallelIteratorFactory;
 import com.salesforce.phoenix.jdbc.PhoenixConnection;
+import com.salesforce.phoenix.parse.FilterableStatement;
 import com.salesforce.phoenix.query.*;
 import com.salesforce.phoenix.schema.TableRef;
 import com.salesforce.phoenix.util.ScanUtil;
@@ -53,22 +55,29 @@ import com.salesforce.phoenix.util.ScanUtil;
 public abstract class BasicQueryPlan implements QueryPlan {
     protected final TableRef table;
     protected final StatementContext context;
+    protected final FilterableStatement statement;
     protected final RowProjector projection;
     protected final ParameterMetaData paramMetaData;
     protected final Integer limit;
     protected final OrderBy orderBy;
     protected final GroupBy groupBy;
+    protected final ParallelIteratorFactory parallelIteratorFactory;
 
     private Scanner scanner;
 
-    protected BasicQueryPlan(StatementContext context, TableRef table, RowProjector projection, ParameterMetaData paramMetaData, Integer limit, OrderBy orderBy, GroupBy groupBy) {
+    protected BasicQueryPlan(
+            StatementContext context, FilterableStatement statement, TableRef table,
+            RowProjector projection, ParameterMetaData paramMetaData, Integer limit, OrderBy orderBy,
+            GroupBy groupBy, ParallelIteratorFactory parallelIteratorFactory) {
         this.context = context;
+        this.statement = statement;
         this.table = table;
         this.projection = projection;
         this.paramMetaData = paramMetaData;
         this.limit = limit;
         this.orderBy = orderBy;
         this.groupBy = groupBy;
+        this.parallelIteratorFactory = parallelIteratorFactory;
     }
 
     @Override
